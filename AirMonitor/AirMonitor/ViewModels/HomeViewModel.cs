@@ -1,10 +1,12 @@
 ﻿using AirMonitor.Models;
 using AirMonitor.Services;
+using AirMonitor.ViewModels.Base;
 using AirMonitor.Views;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Windows.Input;
 using Xamarin.Essentials;
 using Xamarin.Forms;
 
@@ -17,12 +19,22 @@ namespace AirMonitor.ViewModels
 		/// <summary>
 		/// Whether the application is currently loading data.
 		/// </summary>
-		public bool IsLoading { get;  private set; }
+		public bool IsLoading { get; private set; } = true;
+
+		/// <summary>
+		/// Whether the application is requesting/reading new data after user had used refresh command.
+		/// </summary>
+		public bool IsRefreshing { get; private set; } = false;
 
 		/// <summary>
 		/// List of measurements for nearby stations.
 		/// </summary>
 		public List<Measurement> Measurements { get; private set; }
+
+		/// <summary>
+		/// Request new measurements.
+		/// </summary>
+		public ICommand RefreshMeasurementsCommand { get; set; }
 
 		/// <summary>
 		/// Service responsible for sending requests to Airly endpoints.
@@ -43,6 +55,8 @@ namespace AirMonitor.ViewModels
 			this.navigation = navigation;
 
 			Initialize();
+
+			RefreshMeasurementsCommand = new RelayCommand(async () => await RefreshData());
 		}
 
 		#endregion Constructor
@@ -62,18 +76,33 @@ namespace AirMonitor.ViewModels
 		#region Private Methods
 
 		/// <summary>
-		/// Send requests to Airly endpoints with current location.
+		/// Send requests to Airly endpoints with current location or read data from database .
 		/// </summary>
 		private async void Initialize()
 		{
 			IsLoading = true;
 
-			Location location = await GetLocation();
-			IEnumerable<Installation> stations = await GetStations(location);
-			IEnumerable<Measurement> measurements = await GetMeasurements(stations);
-			Measurements = new List<Measurement>(measurements);
+			if (App.DatabaseHelper.IsDataValid())
+			{
+				await Task.Run(() => Measurements = App.DatabaseHelper.ReadMeasurements().ToList());
+			}
+			else
+			{
+				await Task.Run(() => RequestData());
+			}
 
 			IsLoading = false;
+		}
+
+		private async Task RequestData()
+		{
+			Location location = await GetLocation();
+			IEnumerable<Installation> stations = await GetStations(location);
+			App.DatabaseHelper.SaveInstallations(stations);
+
+			IEnumerable<Measurement> measurements = await GetMeasurements(stations);
+			Measurements = new List<Measurement>(measurements);
+			App.DatabaseHelper.SaveMeasurements(Measurements);
 		}
 
 		/// <summary>
@@ -104,6 +133,11 @@ namespace AirMonitor.ViewModels
 			foreach (Installation station in stations)
 			{
 				Measurement measurement = await airlyDataService.GetMeasurements(station.Id);
+				if (measurement == null)
+				{
+					continue;
+				}
+
 				measurement.Installation = station;
 				measurement.CurrentDisplayValue = Convert.ToInt32(Math.Round(measurement.Current.Indexes.FirstOrDefault().Value));
 
@@ -111,6 +145,19 @@ namespace AirMonitor.ViewModels
 			}
 
 			return measurements;
+		}
+
+		/// <summary>
+		/// Request new data from the Airly endpoints.
+		/// </summary>
+		/// <returns></returns>
+		private async Task RefreshData()
+		{
+			IsRefreshing = true;
+
+			await Task.Run(() => RequestData());
+
+			IsRefreshing = false;
 		}
 
 		#endregion Private Methods
